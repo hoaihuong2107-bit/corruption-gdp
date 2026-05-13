@@ -1,0 +1,255 @@
+---
+title: "Corruption & Wealth"
+author: "Huong Tong | Project 2"
+format:
+  revealjs:
+    theme: simple
+    transition: fade
+    slide-number: true
+    embed-resources: true
+    scrollable: true
+execute:
+  warning: false
+  message: false
+  echo: true
+---
+
+## The Question
+
+::::: columns
+::: {.column width="50%"}
+![](https://raketcontent.com/20240108_131242_0000_5015e25f5f.png){width="100%"}
+:::
+
+::: {.column width="50%"}
+Why are some countries rich and some poor?
+
+One thing kept showing up in the data above everything else.
+
+**How corrupt the government is.**
+
+-   **CPI score** — 0 = extremely corrupt, 100 = very clean
+-   **GDP per capita** — economic output per person, in USD
+:::
+:::::
+
+## The Data
+
+```{r}
+#| label: setup
+#| echo: false
+
+library(tidyverse)
+library(scales)
+
+gdp_raw <- read_csv("API_NY.GDP.PCAP.CD_DS2_en_csv_v2_121663.csv", skip = 4)
+cpi_raw <- read_csv("global-cpi-all.csv")
+```
+
+Two datasets. Both public. Both free.
+
+|   | CPI Dataset | GDP Dataset |
+|------------------------|------------------------|------------------------|
+| **Source** | Transparency International | World Bank |
+| **Coverage** | 180 countries, 2012–2025 | 266 countries, 1960–2024 |
+| **Key column** | `score` — 0 (corrupt) to 100 (clean) | `gdp_pc` — USD per person |
+| **Joined by** | `iso3` country code + `year` | → **178 countries, 2,067 rows** |
+
+## Reshaping the Data
+
+```{r}
+#| label: wrangle
+#| echo: true
+
+# GDP file has years as columns — pivot_longer() fixes that
+gdp_long <- gdp_raw |>
+  select(`Country Name`, `Country Code`, `2012`:`2023`) |>
+  pivot_longer(
+    cols      = `2012`:`2023`,
+    names_to  = "year",       # column names → "year" column
+    values_to = "gdp_pc"      # values → "gdp_pc" column
+  ) |>
+  mutate(year = as.integer(year)) |>
+  filter(!is.na(gdp_pc)) |>
+  rename(iso3 = `Country Code`)
+
+# inner_join() — only keeps countries in BOTH datasets
+df <- inner_join(
+  gdp_long,
+  cpi_raw |> select(iso3, country, region, year, cpi = score),
+  by = c("iso3", "year")
+) |>
+  filter(gdp_pc > 0) |>
+  mutate(log_gdp = log10(gdp_pc))
+
+cat("Countries:", n_distinct(df$iso3), "| Rows:", nrow(df))
+```
+
+## Who's in the Data?
+
+```{r}
+#| label: first-look
+#| echo: true
+
+df |>
+  filter(year == 2022) |>
+  arrange(desc(cpi)) |>
+  select(Country = country,
+         Region  = region,
+         `CPI Score` = cpi,
+         `GDP per capita` = gdp_pc) |>
+  slice(c(1:3, (n() - 2):n())) |>
+  mutate(`GDP per capita` = dollar(`GDP per capita`, accuracy = 1)) |>
+  knitr::kable(caption = "Top 3 least corrupt vs 3 most corrupt countries, 2022")
+```
+
+Denmark (CPI 90) — **\$67,781** per person. Somalia (CPI 12) — **\$573** per person. Same planet. Same year.
+
+## The Global Pattern (2022)
+
+```{r}
+#| label: scatter
+#| echo: true
+#| output-location: slide
+#| fig-width: 8
+#| fig-height: 5
+
+label_these <- c("Denmark", "Finland", "Singapore",
+                 "Somalia", "Venezuela", "Syria",
+                 "Russia", "Brazil", "Rwanda")
+
+df_2022 <- df |> filter(year == 2022)
+
+ggplot(df_2022, aes(x = cpi, y = log_gdp, color = region)) +
+  geom_point(size = 2.5, alpha = 0.7) +
+  geom_smooth(aes(group = 1), method = "lm",
+              color = "black", linewidth = 1, se = TRUE) +
+  geom_text(
+    data  = df_2022 |> filter(country %in% label_these),
+    aes(label = country),
+    size = 3, color = "black", vjust = -0.8
+  ) +
+  scale_y_continuous(
+    labels = function(x) paste0("$", round(10^x / 1e3, 0), "k")
+  ) +
+  scale_x_continuous(breaks = seq(10, 90, 10)) +
+  scale_color_brewer(palette = "Set2", name = "Region") +
+  labs(
+    title    = "Less corruption → higher GDP per capita",
+    subtitle = "178 countries, 2022. Black line = linear regression.",
+    x = "CPI Score (0 = very corrupt, 100 = very clean)",
+    y = "GDP per capita"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+## Before We Look at the Numbers...
+
+![](inequality.jpg){width="80%" fig-align="center"}
+
+> *Same city. Same morning. Different worlds. Why?*
+
+## The Wealth Gap
+
+```{r}
+#| label: gap
+#| echo: false
+#| fig-width: 8
+#| fig-height: 5
+
+df |>
+  filter(year == 2022) |>
+  mutate(
+    cpi_group = cut(cpi,
+      breaks = c(0, 25, 50, 75, 100),
+      labels = c("Very Corrupt\n(0–25)", "Corrupt\n(26–50)",
+                 "Clean\n(51–75)", "Very Clean\n(76–100)"),
+      include.lowest = TRUE)
+  ) |>
+  group_by(cpi_group) |>
+  summarise(median_gdp = median(gdp_pc), n = n()) |>
+  ggplot(aes(x = cpi_group, y = median_gdp, fill = cpi_group)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = paste0(dollar(median_gdp, accuracy = 1),
+                               "\n(", n, " countries)")),
+            vjust = -0.4, size = 4.5) +
+  scale_fill_manual(
+    values = c("#d73027", "#fc8d59", "#91bfdb", "#4575b4")
+  ) +
+  scale_y_continuous(
+    labels = dollar,
+    expand = expansion(mult = c(0, 0.2))
+  ) +
+  labs(
+    title    = "Median GDP per capita by corruption level (2022)",
+    subtitle = "Very Clean countries are 27× richer than Very Corrupt ones",
+    x = NULL, y = "Median GDP per capita"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+Wealth gap is **27 times** more.
+
+## So How Strong Is This Really?
+
+```{r}
+#| label: interpretation
+#| echo: false
+
+model <- lm(log_gdp ~ cpi, data = df |> filter(year == 2022))
+b   <- round(coef(model)["cpi"], 4)
+pct <- round((10^b - 1) * 100, 1)
+r2  <- round(summary(model)$r.squared * 100, 1)
+```
+
+We ran one line of R on 178 countries.
+
+```r
+lm(log_gdp ~ cpi, data = df)
+```
+
+. . .
+
+Out of every reason a country could be rich or poor —
+geography, history, trade, education, resources —
+
+**corruption score alone accounts for `r r2`% of it.**
+
+. . .
+
+And every single point a country cleans up —
+
+**`r pct`% more money in the pocket of the average person.**
+
+That's schools getting funded.
+Hospitals getting built.
+Kids getting a shot they wouldn't have had.
+
+. . .
+
+------------------------------------------------------------------------
+
+In 2024 — Acemoglu, Johnson & Robinson won the Nobel Prize in Economics.
+
+A lifetime of research. Their conclusion —
+
+. . .
+
+*"What separates rich countries from poor countries*
+*is whether institutions work for the people — or extract from them."*
+
+. . .
+
+
+And our data — 178 countries, 12 years —
+points exactly in the same direction.
+
+. . .
+
+## What We Found
+
+- **178 countries, 12 years** of real data
+- CPI alone explains **62%** of why some countries are rich and others aren't
+- Very clean countries are **27× richer** than very corrupt ones
+- **The cause is still open — does corruption create poverty, or does poverty create corruption?**
